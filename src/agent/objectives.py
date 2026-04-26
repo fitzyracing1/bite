@@ -54,6 +54,29 @@ def default_objectives_for_task(task_name: str) -> list[Objective]:
                 0.88,
             ),
         ]
+    elif task_name == "software_solver":
+        seeds = [
+            (
+                "Find costly manual engineering workflows to automate",
+                "developer workflow automation repetitive manual process",
+                0.97,
+            ),
+            (
+                "Identify integration pain points in modern stacks",
+                "api integration pain point engineering team",
+                0.94,
+            ),
+            (
+                "Discover newly released dev tools with unmet onboarding needs",
+                "new developer tool release onboarding setup complexity",
+                0.9,
+            ),
+            (
+                "Track high-signal bug classes suitable for productized fixes",
+                "common production bug class root cause fix template",
+                0.88,
+            ),
+        ]
     else:
         seeds = [
             ("General tech landscape scan", "software release notes this week", 0.7),

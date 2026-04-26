@@ -55,6 +55,20 @@ That lets you train one task today without locking the system to only that task.
    - `PYTHONPATH=src python -m agent.main release-check --task mars_founder --preset conservative`
 15. Generate Day 10 operator runbook:
    - `PYTHONPATH=src python -m agent.main runbook --task mars_founder --preset conservative`
+16. Run persistent monetization loop (continuous lead export):
+   - `PYTHONPATH=src python -m agent.main money-loop --task trend_watch --cycles-per-iteration 3 --interval 10 --sleep-between-iterations 300 --min-lead-confidence 0.6 --export-path logs/revenue_leads.csv`
+17. Run generalized software-solver scope (not Mars-limited):
+   - `PYTHONPATH=src python -m agent.main money-loop --task software_solver --cycles-per-iteration 3 --interval 10 --sleep-between-iterations 300 --min-lead-confidence 0.6 --export-path logs/revenue_leads.csv --usd-per-score-point 120`
+18. Auto-submit generated code changes:
+   - `PYTHONPATH=src python -m agent.main auto-submit --repo-dir . --branch auto/submission --commit-message "Automated software submission" --push`
+19. Export payout-ready ledger rows (masked destination fields):
+   - `PYTHONPATH=src python -m agent.main export-payout --status open --limit 200 --output-path logs/payout_export.csv --mark-as-exported`
+
+Payout configuration placeholders (set via environment variables, do not hardcode real account/routing numbers):
+- `PAYOUT_DESTINATION_LABEL` (example: `primary_business_account`)
+- `PAYOUT_ACCOUNT_HOLDER` (example: `PLACEHOLDER_NAME`)
+- `PAYOUT_ROUTING_MASKED` (example: `***-PLACEHOLDER`)
+- `PAYOUT_ACCOUNT_MASKED` (example: `***-PLACEHOLDER`)
 
 ## Mars Software Production Mode
 Use this mode when you want the system to produce software artifacts for Mars mission operations.

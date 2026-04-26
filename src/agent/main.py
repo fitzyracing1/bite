@@ -1,19 +1,24 @@
 import argparse
+from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
+from time import sleep
 
 from .config import AgentConfig
+from .finance import load_payout_config_from_env, payout_ready_rows, write_payout_export
 from .models import TaskProfile
 from .presets import apply_preset
+from .revenue import append_leads_csv, lead_score
 from .release import evaluate_release_readiness, generate_operator_runbook
 from .reporter import generate_markdown_report
 from .runner import run_agent, task_skill_overlap
 from .software_factory import generate_code, generate_spec, package_release, run_tests
 from .stability import analyze_stability
 from .store import MemoryStore
+from .submitter import auto_submit_changes
 
 
-TASK_CHOICES = ["trend_watch", "mars_founder", "security_watch", "aerospace_software"]
+TASK_CHOICES = ["trend_watch", "mars_founder", "security_watch", "aerospace_software", "software_solver"]
 
 
 def _ts() -> str:
@@ -251,6 +256,119 @@ def cmd_package_release(args: argparse.Namespace) -> None:
     print(f"{result.message} path={result.path}")
 
 
+def cmd_money_loop(args: argparse.Namespace) -> None:
+    cfg = _build_cfg_from_args(args)
+    store = MemoryStore(cfg.db_path)
+
+    export_path = Path(args.export_path)
+    last_seen_id = max(0, args.start_after_id)
+    iteration = 0
+
+    while True:
+        iteration += 1
+        run_agent(
+            task_name=args.task,
+            cycles=args.cycles_per_iteration,
+            interval_s=args.interval,
+            cfg=cfg,
+        )
+
+        leads = store.findings_since_id(
+            since_id=last_seen_id,
+            min_confidence=args.min_lead_confidence,
+            limit=args.max_export_per_iteration,
+        )
+        exported = append_leads_csv(export_path, leads)
+        newly_ledgered = 0
+        for lead in leads:
+            finding_id = int(lead["id"])
+            if store.revenue_entry_exists_for_finding(finding_id):
+                continue
+            lscore = lead_score(float(lead["confidence"]), float(lead["novelty"]))
+            est_value = round(lscore * args.usd_per_score_point, 2)
+            store.record_revenue_entry(
+                ts=_ts(),
+                task_name=args.task,
+                finding_id=finding_id,
+                source_url=str(lead["source_url"]),
+                title=str(lead["title"]),
+                confidence=float(lead["confidence"]),
+                novelty=float(lead["novelty"]),
+                lead_score=lscore,
+                estimated_value_usd=est_value,
+                status="open",
+                notes=f"auto-scored from money-loop iteration={iteration}",
+            )
+            newly_ledgered += 1
+
+        if leads:
+            last_seen_id = int(leads[-1]["id"])
+
+        if args.generate_report_each_iteration:
+            generate_markdown_report(store, cfg.report_path)
+
+        print(
+            f"money-loop iteration={iteration} task={args.task} "
+            f"new_leads={exported} min_lead_conf={args.min_lead_confidence:.2f} "
+            f"ledgered={newly_ledgered} export={export_path}"
+        )
+
+        if args.max_iterations > 0 and iteration >= args.max_iterations:
+            break
+
+        if args.sleep_between_iterations > 0:
+            sleep(args.sleep_between_iterations)
+
+
+def cmd_auto_submit(args: argparse.Namespace) -> None:
+    result = auto_submit_changes(
+        repo_dir=Path(args.repo_dir),
+        branch=args.branch,
+        commit_message=args.commit_message,
+        push=args.push,
+    )
+    print(
+        f"auto-submit ok={result.ok} branch={result.branch} "
+        f"commit={result.commit_hash or 'n/a'} message={result.message}"
+    )
+
+
+def cmd_export_payout(args: argparse.Namespace) -> None:
+    cfg = load_payout_config_from_env()
+    store = MemoryStore(AgentConfig().db_path)
+    entries = store.recent_revenue_entries(limit=args.limit, status=args.status)
+    if not entries:
+        print("payout-export rows=0 total_usd=0.00 path=n/a")
+        return
+
+    grouped: dict[int, dict[str, str | int | float]] = defaultdict(dict)
+    for e in entries:
+        grouped[int(e["id"])] = e
+    unique_entries = list(grouped.values())
+
+    rows = payout_ready_rows(unique_entries, cfg)
+    path = Path(args.output_path)
+    count = write_payout_export(path, rows)
+    total = round(sum(float(x["estimated_value_usd"]) for x in unique_entries), 2)
+
+    if args.mark_as_exported and count > 0:
+        ids = [int(x["ledger_id"]) for x in rows]
+        store.mark_revenue_entries_status(ids, "exported")
+
+    store.record_payout_export(
+        ts=_ts(),
+        destination_label=cfg.destination_label,
+        total_amount_usd=total,
+        item_count=count,
+        export_path=str(path),
+        notes=(
+            f"masked_destination={cfg.destination_label}; status_filter={args.status}; "
+            f"mark_exported={args.mark_as_exported}"
+        ),
+    )
+    print(f"payout-export rows={count} total_usd={total:.2f} path={path}")
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Autonomous Web Agent")
     sub = parser.add_subparsers(required=True)
@@ -414,6 +532,56 @@ def build_parser() -> argparse.ArgumentParser:
     p_pkg.add_argument("--project-dir", required=True)
     p_pkg.add_argument("--artifact-dir", default="release_artifacts")
     p_pkg.set_defaults(func=cmd_package_release)
+
+    p_money = sub.add_parser(
+        "money-loop",
+        help="Run persistently and export high-confidence findings as monetization leads",
+    )
+    p_money.add_argument("--task", default="trend_watch", choices=TASK_CHOICES)
+    p_money.add_argument("--preset", default="balanced", choices=["balanced", "conservative", "aggressive"])
+    p_money.add_argument("--cycles-per-iteration", type=int, default=3)
+    p_money.add_argument("--interval", type=int, default=10)
+    p_money.add_argument("--sleep-between-iterations", type=int, default=300)
+    p_money.add_argument("--max-iterations", type=int, default=0)
+    p_money.add_argument("--start-after-id", type=int, default=0)
+    p_money.add_argument("--min-lead-confidence", type=float, default=0.6)
+    p_money.add_argument("--max-export-per-iteration", type=int, default=250)
+    p_money.add_argument("--export-path", default="logs/revenue_leads.csv")
+    p_money.add_argument("--usd-per-score-point", type=float, default=100.0)
+    p_money.add_argument("--generate-report-each-iteration", action="store_true")
+
+    p_money.add_argument("--mission-name", default="revenue_intel_loop")
+    p_money.add_argument(
+        "--mission-statement",
+        default="Continuously identify high-confidence AI opportunities for monetizable services.",
+    )
+    p_money.add_argument("--min-confidence", type=float, default=0.55)
+    p_money.add_argument("--min-findings", type=int, default=1)
+    p_money.add_argument("--max-error-rate", type=float, default=0.35)
+    p_money.add_argument("--max-fetches-per-cycle", type=int, default=12)
+    p_money.add_argument("--max-retries-per-target", type=int, default=2)
+    p_money.add_argument("--retry-backoff-s", type=float, default=0.7)
+    p_money.add_argument("--max-consecutive-failures", type=int, default=6)
+    p_money.add_argument("--min-extracted-chars", type=int, default=160)
+    p_money.add_argument("--min-extraction-quality", type=float, default=0.45)
+    p_money.add_argument("--min-accept-confidence", type=float, default=0.45)
+    p_money.add_argument("--max-policy-violations-per-cycle", type=int, default=3)
+    p_money.add_argument("--disable-policy-halt", action="store_true")
+    p_money.set_defaults(func=cmd_money_loop)
+
+    p_submit = sub.add_parser("auto-submit", help="Commit and optionally push generated code changes")
+    p_submit.add_argument("--repo-dir", default=".")
+    p_submit.add_argument("--branch", default="auto/submission")
+    p_submit.add_argument("--commit-message", default="Automated software submission")
+    p_submit.add_argument("--push", action="store_true")
+    p_submit.set_defaults(func=cmd_auto_submit)
+
+    p_payout = sub.add_parser("export-payout", help="Export payout-ready ledger rows with masked destination config")
+    p_payout.add_argument("--status", default="open")
+    p_payout.add_argument("--limit", type=int, default=200)
+    p_payout.add_argument("--output-path", default="logs/payout_export.csv")
+    p_payout.add_argument("--mark-as-exported", action="store_true")
+    p_payout.set_defaults(func=cmd_export_payout)
 
     return parser
 

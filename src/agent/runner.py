@@ -11,6 +11,7 @@ from .store import MemoryStore
 from .tasks.aerospace_software import AerospaceSoftwareTask
 from .tasks.mars_founder import MarsFounderTask
 from .tasks.security_watch import SecurityWatchTask
+from .tasks.software_solver import SoftwareSolverTask
 from .tasks.trend_watch import TrendWatchTask
 
 
@@ -27,6 +28,8 @@ def _load_task(task_name: str):
         return SecurityWatchTask()
     if task_name == "aerospace_software":
         return AerospaceSoftwareTask()
+    if task_name == "software_solver":
+        return SoftwareSolverTask()
     raise ValueError(f"Unknown task: {task_name}")
 
 

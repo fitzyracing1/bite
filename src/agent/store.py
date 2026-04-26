@@ -142,6 +142,31 @@ class MemoryStore:
                 passed INTEGER NOT NULL,
                 notes TEXT NOT NULL
             );
+
+            CREATE TABLE IF NOT EXISTS revenue_ledger (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ts TEXT NOT NULL,
+                task_name TEXT NOT NULL,
+                finding_id INTEGER NOT NULL,
+                source_url TEXT NOT NULL,
+                title TEXT NOT NULL,
+                confidence REAL NOT NULL,
+                novelty REAL NOT NULL,
+                lead_score REAL NOT NULL,
+                estimated_value_usd REAL NOT NULL,
+                status TEXT NOT NULL,
+                notes TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS payout_exports (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ts TEXT NOT NULL,
+                destination_label TEXT NOT NULL,
+                total_amount_usd REAL NOT NULL,
+                item_count INTEGER NOT NULL,
+                export_path TEXT NOT NULL,
+                notes TEXT NOT NULL
+            );
             """
         )
         self._ensure_schema_upgrades()
@@ -292,6 +317,62 @@ class MemoryStore:
                 novelty=row["novelty"],
                 discovered_at=row["discovered_at"],
             )
+            for row in rows
+        ]
+
+    def findings_since_id(
+        self,
+        since_id: int = 0,
+        task_name: str | None = None,
+        min_confidence: float = 0.0,
+        limit: int = 200,
+    ) -> list[dict[str, str | int | float]]:
+        if task_name:
+            rows = self.conn.execute(
+                """
+                SELECT f.id, f.objective_id, o.title AS objective_title, f.source_url, f.title,
+                       f.snippet, f.confidence, f.novelty, f.discovered_at
+                FROM findings f
+                JOIN objectives o ON o.id = f.objective_id
+                WHERE f.id > ?
+                  AND f.confidence >= ?
+                  AND EXISTS (
+                      SELECT 1
+                      FROM cycle_metrics cm
+                      WHERE cm.task_name = ?
+                        AND instr(cm.notes, f.objective_id) > 0
+                  )
+                ORDER BY f.id ASC
+                LIMIT ?
+                """,
+                (since_id, min_confidence, task_name, limit),
+            ).fetchall()
+        else:
+            rows = self.conn.execute(
+                """
+                SELECT f.id, f.objective_id, o.title AS objective_title, f.source_url, f.title,
+                       f.snippet, f.confidence, f.novelty, f.discovered_at
+                FROM findings f
+                JOIN objectives o ON o.id = f.objective_id
+                WHERE f.id > ?
+                  AND f.confidence >= ?
+                ORDER BY f.id ASC
+                LIMIT ?
+                """,
+                (since_id, min_confidence, limit),
+            ).fetchall()
+        return [
+            {
+                "id": row["id"],
+                "objective_id": row["objective_id"],
+                "objective_title": row["objective_title"],
+                "source_url": row["source_url"],
+                "title": row["title"],
+                "snippet": row["snippet"],
+                "confidence": row["confidence"],
+                "novelty": row["novelty"],
+                "discovered_at": row["discovered_at"],
+            }
             for row in rows
         ]
 
@@ -935,3 +1016,132 @@ class MemoryStore:
             }
             for row in rows
         ]
+
+    def record_revenue_entry(
+        self,
+        ts: str,
+        task_name: str,
+        finding_id: int,
+        source_url: str,
+        title: str,
+        confidence: float,
+        novelty: float,
+        lead_score: float,
+        estimated_value_usd: float,
+        status: str,
+        notes: str,
+    ) -> None:
+        self.conn.execute(
+            """
+            INSERT INTO revenue_ledger (
+                ts, task_name, finding_id, source_url, title,
+                confidence, novelty, lead_score, estimated_value_usd,
+                status, notes
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                ts,
+                task_name,
+                finding_id,
+                source_url,
+                title,
+                confidence,
+                novelty,
+                lead_score,
+                estimated_value_usd,
+                status,
+                notes,
+            ),
+        )
+        self.conn.commit()
+
+    def revenue_entry_exists_for_finding(self, finding_id: int) -> bool:
+        row = self.conn.execute(
+            "SELECT 1 FROM revenue_ledger WHERE finding_id = ? LIMIT 1",
+            (finding_id,),
+        ).fetchone()
+        return bool(row)
+
+    def recent_revenue_entries(self, limit: int = 100, status: str | None = None) -> list[dict[str, str | int | float]]:
+        if status:
+            rows = self.conn.execute(
+                """
+                SELECT id, ts, task_name, finding_id, source_url, title,
+                       confidence, novelty, lead_score, estimated_value_usd,
+                       status, notes
+                FROM revenue_ledger
+                WHERE status = ?
+                ORDER BY id DESC
+                LIMIT ?
+                """,
+                (status, limit),
+            ).fetchall()
+        else:
+            rows = self.conn.execute(
+                """
+                SELECT id, ts, task_name, finding_id, source_url, title,
+                       confidence, novelty, lead_score, estimated_value_usd,
+                       status, notes
+                FROM revenue_ledger
+                ORDER BY id DESC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def revenue_summary(self, status: str | None = None) -> dict[str, float]:
+        if status:
+            row = self.conn.execute(
+                """
+                SELECT COUNT(*) AS item_count,
+                       COALESCE(SUM(estimated_value_usd), 0.0) AS total_estimated_usd
+                FROM revenue_ledger
+                WHERE status = ?
+                """,
+                (status,),
+            ).fetchone()
+        else:
+            row = self.conn.execute(
+                """
+                SELECT COUNT(*) AS item_count,
+                       COALESCE(SUM(estimated_value_usd), 0.0) AS total_estimated_usd
+                FROM revenue_ledger
+                """
+            ).fetchone()
+        return {
+            "item_count": float(row["item_count"]),
+            "total_estimated_usd": float(row["total_estimated_usd"]),
+        }
+
+    def mark_revenue_entries_status(self, entry_ids: list[int], status: str) -> int:
+        if not entry_ids:
+            return 0
+        qmarks = ",".join(["?"] * len(entry_ids))
+        cur = self.conn.execute(
+            f"UPDATE revenue_ledger SET status = ? WHERE id IN ({qmarks})",
+            (status, *entry_ids),
+        )
+        self.conn.commit()
+        return int(cur.rowcount)
+
+    def record_payout_export(
+        self,
+        ts: str,
+        destination_label: str,
+        total_amount_usd: float,
+        item_count: int,
+        export_path: str,
+        notes: str,
+    ) -> None:
+        self.conn.execute(
+            """
+            INSERT INTO payout_exports (
+                ts, destination_label, total_amount_usd, item_count, export_path, notes
+            )
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (ts, destination_label, total_amount_usd, item_count, export_path, notes),
+        )
+        self.conn.commit()
