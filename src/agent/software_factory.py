@@ -2,6 +2,7 @@ import json
 import re
 import shutil
 import subprocess
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -157,7 +158,7 @@ def run_tests(project_dir: Path) -> FactoryResult:
     if not project_dir.exists():
         return FactoryResult(False, "Project directory does not exist.")
 
-    cmd = ["/opt/homebrew/bin/python3.13", "-m", "unittest", "-v", "tests.test_core"]
+    cmd = [sys.executable, "-m", "unittest", "-v", "tests.test_core"]
     proc = subprocess.run(cmd, cwd=project_dir, text=True, capture_output=True)
     combined = (proc.stdout or "") + "\n" + (proc.stderr or "")
     out_path = project_dir / "test_output.txt"
