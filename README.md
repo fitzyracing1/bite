@@ -22,6 +22,11 @@ That lets you train one task today without locking the system to only that task.
 - `src/agent/reporter.py`: digest report generation
 - `src/agent/tasks/`: task plugins
 
+## Requirements
+- Python 3.10+ (tested with Python 3.12)
+- On Debian/Ubuntu, the venv module may need to be installed first:
+  - `sudo apt-get install python3-venv` (or the versioned package, e.g. `python3.12-venv`)
+
 ## Quick start
 1. Create a virtual environment and install dependencies:
    - `python3 -m venv .venv`
@@ -31,6 +36,8 @@ That lets you train one task today without locking the system to only that task.
    - `python -m playwright install chromium`
 3. Run one cycle:
    - `PYTHONPATH=src python -m agent.main run --task trend_watch --cycles 1`
+   - This prints `Run complete.` and records cycle metrics in `agent_memory.db`.
+   - See all commands with `PYTHONPATH=src python -m agent.main --help`.
 4. Run with Day 1 mission contract and thresholds:
    - `PYTHONPATH=src python -m agent.main run --task trend_watch --cycles 3 --interval 10 --mission-name daily_trend_intel --mission-statement "Track high-signal AI tooling changes daily with low false positives." --min-confidence 0.55 --min-findings 2 --max-error-rate 0.35`
 5. Run with Day 2 loop hardening controls:
